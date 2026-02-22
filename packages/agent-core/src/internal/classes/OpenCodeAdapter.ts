@@ -397,7 +397,11 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
   private escapeShellArg(arg: string): string {
     if (this.options.platform === 'win32') {
-      if (arg.includes(' ') || arg.includes('"')) {
+      // Quote if the argument contains spaces, double-quotes, or any cmd.exe
+      // metacharacter (&, |, <, >, ^, %) that would be interpreted as command
+      // operators when executing via cmd.exe /s /c. This prevents user-controlled
+      // text (e.g. a prompt containing "&" or "|") from being parsed as separators.
+      if (/[ "&|<>^%]/.test(arg)) {
         return `"${arg.replace(/"/g, '""')}"`;
       }
       return arg;

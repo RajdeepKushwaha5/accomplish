@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { OpenCodeCliNotFoundError } from '../../../src/internal/classes/OpenCodeAdapter.js';
+import os from 'os';
+import {
+  OpenCodeAdapter,
+  OpenCodeCliNotFoundError,
+  type AdapterOptions,
+} from '../../../src/internal/classes/OpenCodeAdapter.js';
 import {
   NON_TASK_CONTINUATION_TOOLS,
   isNonTaskContinuationToolName,
@@ -167,37 +172,35 @@ describe('Shell escaping utilities', () => {
   // ---------------------------------------------------------------------------
   // Issue #596 – Windows: opencode.exe fails to spawn when path has spaces
   //
-  // buildPtySpawnArgs on win32 now routes through cmd.exe /s /c with inner-
-  // escaped args instead of passing the raw exe path to pty.spawn().  The
-  // helpers below mirror the private buildShellCommand / escapeShellArg logic
-  // so we can assert the exact cmd.exe invocation contract.
+  // buildPtySpawnArgs on win32 routes through cmd.exe /s /c with per-token
+  // quoting. These tests call the real private method via a minimal win32
+  // adapter instance so they stay in sync with the production implementation.
   // ---------------------------------------------------------------------------
   describe('Windows spawn via cmd.exe /s /c – Issue #596 (paths with spaces)', () => {
-    // --- local replicas of the private adapter helpers -----------------------
-    function escapeShellArgWin32Issue596(arg: string): string {
-      if (arg.includes(' ') || arg.includes('"')) {
-        return `"${arg.replace(/"/g, '""')}"`;
-      }
-      return arg;
-    }
+    let win32Adapter: OpenCodeAdapter;
 
-    function buildShellCommandIssue596(command: string, args: string[]): string {
-      return [command, ...args].map(escapeShellArgWin32Issue596).join(' ');
-    }
+    beforeEach(() => {
+      const opts: AdapterOptions = {
+        platform: 'win32',
+        isPackaged: false,
+        tempPath: os.tmpdir(),
+        getCliCommand: () => ({ command: 'C:\\Programs\\opencode.exe', args: [] }),
+        buildEnvironment: async () => ({}),
+        buildCliArgs: async () => [],
+      };
+      win32Adapter = new OpenCodeAdapter(opts);
+    });
 
-    /**
-     * Mirror of what buildPtySpawnArgs now does:
-     *   file = 'cmd.exe'
-     *   args = ['/s', '/c', `"${buildShellCommand(...)}"`]
-     */
-    function buildPtySpawnArgsWin32(command: string, args: string[]) {
-      const fullCommand = buildShellCommandIssue596(command, args);
-      return { file: 'cmd.exe', args: ['/s', '/c', `"${fullCommand}"`] };
+    afterEach(() => {
+      win32Adapter.dispose();
+    });
+
+    function spawnArgs(exe: string, args: string[]) {
+      return (win32Adapter as unknown as { buildPtySpawnArgs: (c: string, a: string[]) => { file: string; args: string[] } }).buildPtySpawnArgs(exe, args);
     }
 
     it('uses cmd.exe /s /c as the spawn file for a Windows exe', () => {
-      const exe = 'C:\\Programs\\opencode.exe';
-      const { file, args } = buildPtySpawnArgsWin32(exe, ['run']);
+      const { file, args } = spawnArgs('C:\\Programs\\opencode.exe', ['run']);
 
       expect(file).toBe('cmd.exe');
       expect(args[0]).toBe('/s');
@@ -207,67 +210,62 @@ describe('Shell escaping utilities', () => {
     it('inner-quotes an exe path containing spaces', () => {
       const exe =
         'C:\\Users\\Anish Maheshwari\\AppData\\Local\\Programs\\@accomplishdesktop\\resources\\app.asar.unpacked\\node_modules\\opencode-windows-x64\\bin\\opencode.exe';
-      const { file, args } = buildPtySpawnArgsWin32(exe, ['run', '--format', 'json']);
+      const { file, args } = spawnArgs(exe, ['run', '--format', 'json']);
 
       expect(file).toBe('cmd.exe');
 
-      // Third arg is the outer-quoted full command
       const outerArg = args[2];
       expect(outerArg.startsWith('"')).toBe(true);
       expect(outerArg.endsWith('"')).toBe(true);
-
-      // The exe path must be inner-quoted (space → quoting)
       expect(outerArg).toContain('"C:\\Users\\Anish Maheshwari\\');
 
-      // cmd.exe /s strips the outer pair so the inner command is itself
-      // a properly-quoted exe invocation
+      // cmd.exe /s strips the outer pair, so the inner command must itself be
+      // a properly-quoted exe invocation (no leading double-quote — Issue #596).
       const innerCommand = outerArg.slice(1, -1);
       expect(innerCommand.startsWith('"C:\\')).toBe(true);
-
-      // No extra leading quote from double-quoting (the bug in Issue #596)
       expect(innerCommand.startsWith('""')).toBe(false);
     });
 
     it('does NOT inner-quote a path that has no spaces', () => {
       const exe = 'C:\\Programs\\opencode.exe';
-      const { file, args } = buildPtySpawnArgsWin32(exe, ['run']);
+      const { args } = spawnArgs(exe, ['run']);
 
-      expect(file).toBe('cmd.exe');
-      // Path without spaces is NOT individually quoted
       expect(args[2]).not.toContain('"C:\\Programs\\opencode.exe"');
-      // But outer quotes are still present
       expect(args[2].startsWith('"')).toBe(true);
       expect(args[2].endsWith('"')).toBe(true);
     });
 
     it('inner-quotes CLI args that contain spaces', () => {
       const exe = 'C:\\Users\\My User\\opencode.exe';
-      const cliArgs = ['run', '--prompt', 'fix the login bug'];
-      const { args } = buildPtySpawnArgsWin32(exe, cliArgs);
+      const { args } = spawnArgs(exe, ['run', '--prompt', 'fix the login bug']);
 
-      // Exe path quoted (has space)
       expect(args[2]).toContain('"C:\\Users\\My User\\opencode.exe"');
-      // Prompt arg quoted (has space)
       expect(args[2]).toContain('"fix the login bug"');
-      // Non-space arg not quoted
       expect(args[2]).toContain(' run ');
     });
 
     it('handles a username with Unicode / CJK characters and spaces', () => {
       const exe = 'C:\\Users\\李 四 Wang\\AppData\\Programs\\opencode.exe';
-      const { file, args } = buildPtySpawnArgsWin32(exe, ['run']);
+      const { file, args } = spawnArgs(exe, ['run']);
 
       expect(file).toBe('cmd.exe');
       expect(args[2]).toContain('"C:\\Users\\李 四 Wang\\AppData\\Programs\\opencode.exe"');
     });
 
     it('escapes embedded double-quotes in the exe path', () => {
-      // Unusual but valid: a directory name that contains a double-quote
       const exe = 'C:\\Users\\Li "test" User\\opencode.exe';
-      const { args } = buildPtySpawnArgsWin32(exe, ['run']);
+      const { args } = spawnArgs(exe, ['run']);
 
-      // Embedded " → ""
       expect(args[2]).toContain('"C:\\Users\\Li ""test"" User\\opencode.exe"');
+    });
+
+    it('quotes args containing cmd.exe metacharacters to prevent injection', () => {
+      // A user prompt like "foo&bar" must not be interpreted as two commands by
+      // cmd.exe. Without quoting, cmd.exe parses "&" as a command separator.
+      const exe = 'C:\\Programs\\opencode.exe';
+      const { args } = spawnArgs(exe, ['run', '--prompt', 'foo&bar']);
+
+      expect(args[2]).toContain('"foo&bar"');
     });
   });
 
