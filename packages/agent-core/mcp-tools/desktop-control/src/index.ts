@@ -15,7 +15,9 @@ import { promisify } from 'util';
 const execFile = promisify(execFileCb);
 
 const PERMISSION_API_PORT = process.env.PERMISSION_API_PORT ?? '9226';
-const PERMISSION_API_URL = `http://localhost:${PERMISSION_API_PORT}/permission`;
+// Desktop actions use the dedicated /desktop-permission endpoint on the same
+// port, which accepts { operation, ...details } without requiring a filePath.
+const PERMISSION_API_URL = `http://localhost:${PERMISSION_API_PORT}/desktop-permission`;
 
 type SupportedPlatform = 'darwin' | 'win32' | 'linux';
 const PLATFORM = process.platform as SupportedPlatform;

@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as pty from 'node-pty';
 import { EventEmitter } from 'events';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { StreamParser } from './StreamParser.js';
@@ -827,15 +828,21 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
         throw new Error(`Windows CLI command must resolve to an .exe path. Received: ${command}`);
       }
 
-      // On Windows, route through cmd.exe /s /c with proper inner quoting so that
-      // installation paths containing spaces (e.g. "C:\Users\My Name\...") are
-      // handled correctly in both ConPTY (Windows 10 1809+) and WinPTY fallback
-      // modes.  Passing the raw .exe path directly to pty.spawn works for ConPTY
-      // but fails in WinPTY, where the intermediate cmd.exe session receives the
-      // unquoted path and splits it at every space.
+      // On Windows, write a temporary PowerShell script file (.ps1) that invokes
+      // opencode.exe with each argument as a single-quoted PS string.
+      // This completely avoids cmd.exe /s /c command-line quoting ambiguity that
+      // breaks when the task text contains double-quotes, #, %, ^ or & characters.
+      // In PowerShell single-quoted strings only ' itself needs escaping (as '').
+      // The -ExecutionPolicy Bypass flag ensures the temp script can always run.
       // See: https://github.com/accomplish-ai/accomplish/issues/596
-      const fullCommand = this.buildShellCommand(command, args);
-      return { file: 'cmd.exe', args: ['/s', '/c', `"${fullCommand}"`] };
+      const psArgs = [command, ...args].map((a) => `'${a.replace(/'/g, "''")}'`).join(' ');
+      const psScript = `& ${psArgs}\n`;
+      const scriptPath = path.join(os.tmpdir(), `accomplish-run-${Date.now()}.ps1`);
+      fs.writeFileSync(scriptPath, psScript, 'utf-8');
+      return {
+        file: 'powershell.exe',
+        args: ['-NonInteractive', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+      };
     }
 
     const shell =
