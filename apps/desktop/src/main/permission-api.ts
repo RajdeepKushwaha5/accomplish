@@ -138,7 +138,13 @@ export function startPermissionApiServer(): http.Server {
     const uiData: FilePermissionRequestData = isDesktopPermission
       ? ({
           operation: String(rawData.operation),
-          filePath: String(rawData.details ?? JSON.stringify(rawData)),
+          // Exclude the `operation` key and show the remaining details as the
+          // file path field so the permission UI has human-readable context.
+          filePath: JSON.stringify(
+            Object.fromEntries(
+              Object.entries(rawData).filter(([k]) => k !== 'operation'),
+            ),
+          ),
         } as unknown as FilePermissionRequestData)
       : (data as FilePermissionRequestData);
     const permissionRequest = permissionHandler.buildFilePermissionRequest(requestId, taskId, uiData);

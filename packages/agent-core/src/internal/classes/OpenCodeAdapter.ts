@@ -2,7 +2,6 @@ import * as crypto from 'crypto';
 import * as pty from 'node-pty';
 import { EventEmitter } from 'events';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 
 import { StreamParser } from './StreamParser.js';
@@ -828,21 +827,12 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
         throw new Error(`Windows CLI command must resolve to an .exe path. Received: ${command}`);
       }
 
-      // On Windows, write a temporary PowerShell script file (.ps1) that invokes
-      // opencode.exe with each argument as a single-quoted PS string.
-      // This completely avoids cmd.exe /s /c command-line quoting ambiguity that
-      // breaks when the task text contains double-quotes, #, %, ^ or & characters.
-      // In PowerShell single-quoted strings only ' itself needs escaping (as '').
-      // The -ExecutionPolicy Bypass flag ensures the temp script can always run.
+      // On Windows, spawn the opencode .exe directly in node-pty without a shell wrapper.
+      // Passing args as an array avoids all cmd.exe / PowerShell quoting issues:
+      // the OS hands each element to the process as a raw argv entry regardless
+      // of what characters it contains (double-quotes, %, ^, &, newlines, etc.).
       // See: https://github.com/accomplish-ai/accomplish/issues/596
-      const psArgs = [command, ...args].map((a) => `'${a.replace(/'/g, "''")}'`).join(' ');
-      const psScript = `& ${psArgs}\n`;
-      const scriptPath = path.join(os.tmpdir(), `accomplish-run-${Date.now()}.ps1`);
-      fs.writeFileSync(scriptPath, psScript, 'utf-8');
-      return {
-        file: 'powershell.exe',
-        args: ['-NonInteractive', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
-      };
+      return { file: command, args };
     }
 
     const shell =

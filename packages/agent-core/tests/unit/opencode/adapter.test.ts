@@ -165,102 +165,66 @@ describe('Shell escaping utilities', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Issue #596 – Windows: opencode.exe fails to spawn when path has spaces
+  // Issue #596 – Windows: opencode.exe fails to spawn when path has spaces or
+  // when the task text contains double-quotes, %, ^, &, # characters.
   //
-  // buildPtySpawnArgs on win32 now writes a temporary PowerShell .ps1 script
-  // that invokes opencode.exe with single-quoted arguments.  This avoids ALL
-  // cmd.exe /s /c quoting ambiguity (paths with spaces, task text with double-
-  // quotes, %, ^, &, # characters, etc.).
-  //
-  // The helpers below mirror the PS-script-building logic so we can assert the
-  // exact PowerShell invocation contract without touching the filesystem.
+  // buildPtySpawnArgs on win32 now spawns opencode.exe DIRECTLY in node-pty
+  // without any shell wrapper (no cmd.exe, no powershell.exe).  When args are
+  // passed as an array the OS hands each element to the process as a raw argv
+  // entry — no shell quoting is ever needed regardless of what characters the
+  // strings contain.
   // ---------------------------------------------------------------------------
-  describe('Windows spawn via PowerShell .ps1 – Issue #596 (paths with spaces + arbitrary task text)', () => {
-    /**
-     * Mirror of the adapter's PS script generation:
-     *   Each arg → `'${arg.replace(/'/g, "''")}'`
-     *   Joined with spaces and prefixed with `& `
-     */
-    function buildPs1Script(command: string, args: string[]): string {
-      const psArgs = [command, ...args].map((a) => `'${a.replace(/'/g, "''")}'`).join(' ');
-      return `& ${psArgs}\n`;
-    }
-
+  describe('Windows direct spawn – Issue #596 (paths with spaces + arbitrary task text)', () => {
     function buildPtySpawnArgsWin32(command: string, args: string[]) {
-      // mirrors buildPtySpawnArgs for win32 (file-writing is not tested here)
-      return {
-        file: 'powershell.exe',
-        args: ['-NonInteractive', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '<scriptPath>'],
-        scriptContent: buildPs1Script(command, args),
-      };
+      // mirrors buildPtySpawnArgs for win32: command → file, args → args
+      return { file: command, args };
     }
 
-    it('uses powershell.exe as the spawn file for a Windows exe', () => {
-      const { file, args } = buildPtySpawnArgsWin32('C:\\Programs\\opencode.exe', ['run']);
-      expect(file).toBe('powershell.exe');
-      expect(args).toContain('-NonInteractive');
-      expect(args).toContain('-NoProfile');
-      expect(args).toContain('-ExecutionPolicy');
-      expect(args).toContain('Bypass');
-      expect(args).toContain('-File');
+    it('uses the exe path itself as the spawn file', () => {
+      const exe = 'C:\\Programs\\opencode.exe';
+      const { file } = buildPtySpawnArgsWin32(exe, ['run']);
+      expect(file).toBe(exe);
     });
 
-    it('single-quotes the exe path containing spaces in the PS script', () => {
+    it('passes args through unchanged (no shell quoting needed)', () => {
+      const exe = 'C:\\Programs\\opencode.exe';
+      const argsIn = ['run', '--format', 'json'];
+      const { args } = buildPtySpawnArgsWin32(exe, argsIn);
+      expect(args).toEqual(argsIn);
+    });
+
+    it('handles an exe path with spaces', () => {
       const exe =
         'C:\\Users\\Anish Maheshwari\\AppData\\Local\\Programs\\@accomplishdesktop\\resources\\app.asar.unpacked\\node_modules\\opencode-windows-x64\\bin\\opencode.exe';
-      const { scriptContent } = buildPtySpawnArgsWin32(exe, ['run', '--format', 'json']);
-
-      expect(scriptContent).toContain(`'${exe}'`);
-      expect(scriptContent.startsWith('& ')).toBe(true);
-    });
-
-    it('single-quotes a path without spaces (consistent quoting for all args)', () => {
-      const exe = 'C:\\Programs\\opencode.exe';
-      const { scriptContent } = buildPtySpawnArgsWin32(exe, ['run']);
-
-      expect(scriptContent).toContain(`'C:\\Programs\\opencode.exe'`);
-    });
-
-    it('single-quotes CLI args that contain spaces', () => {
-      const exe = 'C:\\Users\\My User\\opencode.exe';
-      const { scriptContent } = buildPtySpawnArgsWin32(exe, ['run', '--prompt', 'fix the login bug']);
-
-      expect(scriptContent).toContain(`'C:\\Users\\My User\\opencode.exe'`);
-      expect(scriptContent).toContain(`'fix the login bug'`);
+      const { file } = buildPtySpawnArgsWin32(exe, ['run']);
+      expect(file).toBe(exe);
     });
 
     it('handles task text containing double-quotes (the original failure case)', () => {
       const exe = 'C:\\Programs\\opencode.exe';
       const taskText = 'Take a screenshot. Type "Desktop automation by Accomplish - PR #189"';
-      const { scriptContent } = buildPtySpawnArgsWin32(exe, ['run', taskText]);
-
-      // Double-quotes in task text are passed through verbatim in single-quoted PS strings
-      // (they require no escaping at all)
-      expect(scriptContent).toContain(`'${taskText}'`);
+      const { args } = buildPtySpawnArgsWin32(exe, ['run', taskText]);
+      expect(args[1]).toBe(taskText);
     });
 
-    it("escapes single-quotes in args by doubling them (PS '' convention)", () => {
+    it("handles task text with single-quotes", () => {
       const exe = 'C:\\Programs\\opencode.exe';
       const taskText = "it's a test";
-      const { scriptContent } = buildPtySpawnArgsWin32(exe, ['run', taskText]);
-
-      expect(scriptContent).toContain(`'it''s a test'`);
-    });
-
-    it('handles a username with Unicode / CJK characters and spaces', () => {
-      const exe = 'C:\\Users\\李 四 Wang\\AppData\\Programs\\opencode.exe';
-      const { scriptContent } = buildPtySpawnArgsWin32(exe, ['run']);
-
-      expect(scriptContent).toContain(`'C:\\Users\\李 四 Wang\\AppData\\Programs\\opencode.exe'`);
+      const { args } = buildPtySpawnArgsWin32(exe, ['run', taskText]);
+      expect(args[1]).toBe(taskText);
     });
 
     it('handles task text with %, ^, &, # characters that break cmd.exe', () => {
       const exe = 'C:\\Programs\\opencode.exe';
       const taskText = 'Achieve 50% efficiency & log #progress ^ now';
-      const { scriptContent } = buildPtySpawnArgsWin32(exe, ['run', taskText]);
+      const { args } = buildPtySpawnArgsWin32(exe, ['run', taskText]);
+      expect(args[1]).toBe(taskText);
+    });
 
-      // All special cmd.exe chars are safe inside PS single-quoted strings
-      expect(scriptContent).toContain(`'${taskText}'`);
+    it('handles a username with Unicode / CJK characters and spaces', () => {
+      const exe = 'C:\\Users\\李 四 Wang\\AppData\\Programs\\opencode.exe';
+      const { file } = buildPtySpawnArgsWin32(exe, ['run']);
+      expect(file).toBe(exe);
     });
   });
 

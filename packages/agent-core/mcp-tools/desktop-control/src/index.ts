@@ -6,6 +6,7 @@ import {
   ListToolsRequestSchema,
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
+import { randomUUID } from 'crypto';
 import { execFile as execFileCb, spawn } from 'child_process';
 import { readFile, unlink, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -36,7 +37,7 @@ function denied(action: string): CallToolResult {
 }
 
 function tmpFile(prefix: string, ext: string): string {
-  return join(tmpdir(), `dc-${prefix}-${Date.now()}.${ext}`);
+  return join(tmpdir(), `dc-${prefix}-${randomUUID()}.${ext}`);
 }
 
 /** Escape a string for use inside an AppleScript double-quoted string literal. */
@@ -73,7 +74,27 @@ async function checkPermission(
 
 // ─── Screenshot ──────────────────────────────────────────────────────────────
 
+/**
+ * Session-level consent for screen capture. The user is prompted once per
+ * MCP server process lifetime; subsequent calls skip the prompt.
+ */
+let screenshotSessionConsent: boolean | null = null;
+
 async function captureScreenshot(): Promise<CallToolResult> {
+  // Gate: request session-level consent the first time a screenshot is taken.
+  if (screenshotSessionConsent === null) {
+    screenshotSessionConsent = await checkPermission('screenshot', {
+      name: 'Screen capture',
+      details: 'Allow Accomplish to capture screenshots for this session?',
+    });
+  }
+  if (!screenshotSessionConsent) {
+    return denied('screenshot (session consent denied)');
+  }
+  // Audit: emit a structured log entry so the user can review captures.
+  console.error(
+    JSON.stringify({ audit: 'desktop:screenshot', timestamp: new Date().toISOString() }),
+  );
   const png = tmpFile('screenshot', 'png');
   try {
     if (PLATFORM === 'darwin') {
@@ -264,18 +285,18 @@ async function typeText(text: string): Promise<void> {
   } else if (PLATFORM === 'win32') {
     const txt = tmpFile('type', 'txt');
     const ps1 = tmpFile('type', 'ps1');
-    await writeFile(txt, text, 'utf8');
-    await writeFile(
-      ps1,
-      `param([string]$F)
+    try {
+      await writeFile(txt, text, 'utf8');
+      await writeFile(
+        ps1,
+        `param([string]$F)
 $content = [System.IO.File]::ReadAllText($F, [System.Text.Encoding]::UTF8)
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.Clipboard]::SetText($content)
 Start-Sleep -Milliseconds 100
 [System.Windows.Forms.SendKeys]::SendWait('^v')`,
-      'utf8',
-    );
-    try {
+        'utf8',
+      );
       await execFile('powershell', [
         '-NoProfile', '-NonInteractive', '-File', ps1, '-F', txt,
       ]);
@@ -314,7 +335,7 @@ const WIN_MODIFIERS: Record<string, string> = {
 
 const WIN_KEYS: Record<string, string> = {
   return: '{ENTER}', enter: '{ENTER}', esc: '{ESC}', escape: '{ESC}',
-  tab: '{TAB}', delete: '{DELETE}', backspace: '{BACKSPACE}', space: ' ',
+  tab: '{TAB}', delete: '{DELETE}', forwarddelete: '{DELETE}', backspace: '{BACKSPACE}', space: ' ',
   up: '{UP}', down: '{DOWN}', left: '{LEFT}', right: '{RIGHT}',
   home: '{HOME}', end: '{END}', pageup: '{PGUP}', pagedown: '{PGDN}',
   f1: '{F1}', f2: '{F2}', f3: '{F3}', f4: '{F4}', f5: '{F5}', f6: '{F6}',
