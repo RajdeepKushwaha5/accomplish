@@ -744,16 +744,16 @@ describe('ConfigGenerator', () => {
       expect(prompt).toContain('bash commands');
     });
 
-    it('should still contain start_task as mandatory first tool', () => {
-      expect(prompt).toContain('You MUST call start_task before any other tool');
-      expect(prompt).toContain('CALL start_task FIRST - THIS IS MANDATORY');
+    it('should still contain start-task_start_task as mandatory first tool', () => {
+      expect(prompt).toContain('You MUST call start-task_start_task before any other tool');
+      expect(prompt).toContain('CALL start-task_start_task FIRST - THIS IS MANDATORY');
     });
 
     it('should still contain todowrite instructions under needs_planning=true path', () => {
       expect(prompt).toContain('Mark completed steps as "completed"');
       expect(prompt).toContain('Mark the current step as "in_progress"');
       expect(prompt).toContain(
-        'All todos must be "completed" or "cancelled" before calling complete_task',
+        'All todos must be "completed" or "cancelled" before calling complete-task_complete_task',
       );
     });
 
