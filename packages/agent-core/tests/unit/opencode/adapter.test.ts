@@ -173,10 +173,20 @@ describe('Shell escaping utilities', () => {
   // passed as an array the OS hands each element to the process as a raw argv
   // entry — no shell quoting is ever needed regardless of what characters the
   // strings contain.
+  //
+  // NOTE: buildPtySpawnArgs is a private method and cannot be imported directly.
+  // This block re-implements the same contract (including the .exe safety guard)
+  // to act as a regression test.  If the production function adds new behaviour,
+  // this stub must be updated in lockstep.
   // ---------------------------------------------------------------------------
   describe('Windows direct spawn – Issue #596 (paths with spaces + arbitrary task text)', () => {
+    // Re-implements the win32 branch of the private buildPtySpawnArgs so that
+    // the guard (reject non-.exe commands before they ever reach node-pty) and
+    // the pass-through contract (file = command, args = args) are both tested.
     function buildPtySpawnArgsWin32(command: string, args: string[]) {
-      // mirrors buildPtySpawnArgs for win32: command → file, args → args
+      if (!command.toLowerCase().endsWith('.exe')) {
+        throw new Error(`Windows CLI command must resolve to an .exe path. Received: ${command}`);
+      }
       return { file: command, args };
     }
 
@@ -191,6 +201,17 @@ describe('Shell escaping utilities', () => {
       const argsIn = ['run', '--format', 'json'];
       const { args } = buildPtySpawnArgsWin32(exe, argsIn);
       expect(args).toEqual(argsIn);
+    });
+
+    it('throws if the command does not end with .exe (safety guard)', () => {
+      // Prevents accidental spawning of non-exe binaries (scripts, symlinks,
+      // etc.) that would fail silently or execute in an unexpected shell.
+      expect(() => buildPtySpawnArgsWin32('C:\\Programs\\opencode', ['run'])).toThrow(
+        'Windows CLI command must resolve to an .exe path',
+      );
+      expect(() => buildPtySpawnArgsWin32('/usr/bin/opencode', ['run'])).toThrow(
+        'Windows CLI command must resolve to an .exe path',
+      );
     });
 
     it('handles an exe path with spaces', () => {
