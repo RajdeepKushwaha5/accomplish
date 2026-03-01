@@ -304,27 +304,20 @@ async function typeText(text: string): Promise<void> {
       await writeFile(txt, text, 'utf8');
       await writeFile(
         ps1,
-        // Use WScript.Shell.AppActivate to bring the target window to the
-        // foreground by title — this works from background/hidden processes
-        // where SetForegroundWindow silently fails due to Windows restrictions.
+        // Read the window title written by focusWindow (dc-focused-window.txt).
+        // This avoids GetForegroundWindow() which returns the Electron window after
+        // the model round-trip between focusWindow and typeText calls.
         `param([string]$F)
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public class WinHelper {
-  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-}
-'@
-$hwnd = [WinHelper]::GetForegroundWindow()
-$sb = New-Object System.Text.StringBuilder 512
-[WinHelper]::GetWindowText($hwnd, $sb, 512) | Out-Null
-$title = $sb.ToString()
 $content = [System.IO.File]::ReadAllText($F, [System.Text.Encoding]::UTF8)
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.Clipboard]::SetText($content)
 $wsh = New-Object -ComObject WScript.Shell
+$titleFile = "$env:TEMP\\dc-focused-window.txt"
+if (Test-Path $titleFile) {
+  $title = [System.IO.File]::ReadAllText($titleFile).Trim()
+} else {
+  $title = ''
+}
 if ($title -ne '') { $wsh.AppActivate($title) | Out-Null }
 Start-Sleep -Milliseconds 300
 $wsh.SendKeys('^v')`,
@@ -586,22 +579,18 @@ async function focusWindow(name: string): Promise<void> {
     const ps1 = tmpFile('focus', 'ps1');
     await writeFile(
       ps1,
+      // WScript.Shell.AppActivate works from any process (unlike SetForegroundWindow
+      // which silently fails from background/hidden processes). After activating,
+      // persist the exact window title so typeText can re-activate the same window.
       `param([string]$Title)
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public class WinFocus {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-}
-'@
 $escapedTitle = [System.Management.Automation.WildcardPattern]::Escape($Title)
 $proc = Get-Process | Where-Object {$_.MainWindowTitle -like "*$escapedTitle*"} | Select-Object -First 1
-if($proc) {
-  [WinFocus]::SetForegroundWindow($proc.MainWindowHandle)
-  # Give the OS time to actually bring the window to the foreground before returning.
+if ($proc) {
+  $wsh = New-Object -ComObject WScript.Shell
+  $wsh.AppActivate($proc.MainWindowTitle) | Out-Null
   Start-Sleep -Milliseconds 400
-}
-else { Write-Error "No window found matching: $Title"; exit 1 }`,
+  [System.IO.File]::WriteAllText("$env:TEMP\\dc-focused-window.txt", $proc.MainWindowTitle)
+} else { Write-Error "No window found matching: $Title"; exit 1 }`,
 
       'utf8',
     );
