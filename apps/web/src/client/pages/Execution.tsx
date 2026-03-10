@@ -299,6 +299,17 @@ export function ExecutionPage() {
   }, []);
 
   useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isLoading && !isComplete && !permissionRequest) {
+        e.preventDefault();
+        interruptTask();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isLoading, isComplete, permissionRequest, interruptTask]);
+
+  useEffect(() => {
     if (!pendingSpeechFollowUpRef.current) return;
     if (!canFollowUp || isLoading) return;
     if (followUp !== pendingSpeechFollowUpRef.current) return;
