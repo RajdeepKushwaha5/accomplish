@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Sun, Moon, Desktop, CaretDown } from '@phosphor-icons/react';
 import { applyTheme } from '@/lib/theme';
@@ -25,6 +25,9 @@ function isThemeValue(v: string): v is ThemeValue {
 }
 
 function getStoredTheme(): ThemeValue {
+  if (typeof localStorage === 'undefined') {
+    return 'system';
+  }
   const stored = localStorage.getItem('theme');
   return isThemeValue(stored ?? '') ? (stored as ThemeValue) : 'system';
 }
@@ -34,17 +37,42 @@ export function ThemeSelector() {
   const [current, setCurrent] = useState<ThemeValue>(getStoredTheme);
   const [open, setOpen] = useState(false);
 
-  const handleChange = useCallback(async (value: string) => {
-    if (!isThemeValue(value)) {
-      return;
-    }
-    setCurrent(value);
-    applyTheme(value);
+  useEffect(() => {
     const accomplish = getAccomplish();
-    if (accomplish.setTheme) {
-      await accomplish.setTheme(value);
+    if (accomplish.getTheme) {
+      accomplish
+        .getTheme()
+        .then((theme) => {
+          if (isThemeValue(theme)) {
+            setCurrent(theme);
+          }
+        })
+        .catch(() => {
+          // ignore — fall back to the stored value
+        });
     }
   }, []);
+
+  const handleChange = useCallback(
+    async (value: string) => {
+      if (!isThemeValue(value)) {
+        return;
+      }
+      const previousTheme = current;
+      setCurrent(value);
+      applyTheme(value);
+      const accomplish = getAccomplish();
+      if (accomplish.setTheme) {
+        try {
+          await accomplish.setTheme(value);
+        } catch {
+          setCurrent(previousTheme);
+          applyTheme(previousTheme);
+        }
+      }
+    },
+    [current],
+  );
 
   const currentOption = THEME_OPTIONS.find((o) => o.value === current) ?? THEME_OPTIONS[0];
   const CurrentIcon = currentOption.icon;
