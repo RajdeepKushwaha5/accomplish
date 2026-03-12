@@ -348,8 +348,14 @@
     "exportDialogTitle": "导出应用程序日志",
     "exportHeader": "Accomplish 应用程序日志\n导出时间：{{timestamp}}\n日志目录：{{logDir}}\n\n暂无日志记录。\n"
   },
+  "appearance": {
+    "themeTitle": "外观",
+    "themeDescription": "选择您偏好的颜色主题。",
+    "themeSystem": "跟随系统",
+    "themeLight": "浅色",
+    "themeDark": "深色"
+  },
   "language": {
-    "title": "语言",
     "description": "选择您偏好的显示语言。",
     "auto": "自动（跟随系统）",
     "autoUnsupported": "自动（不支持）",

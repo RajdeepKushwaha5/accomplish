@@ -348,8 +348,14 @@
     "exportDialogTitle": "Экспорт логов приложения",
     "exportHeader": "Логи приложения Accomplish\nЭкспортировано: {{timestamp}}\nКаталог логов: {{logDir}}\n\nЗаписи пока отсутствуют.\n"
   },
+  "appearance": {
+    "themeTitle": "Внешний вид",
+    "themeDescription": "Выберите предпочтительную цветовую тему.",
+    "themeSystem": "Системная",
+    "themeLight": "Светлая",
+    "themeDark": "Тёмная"
+  },
   "language": {
-    "title": "Язык",
     "description": "Выберите предпочитаемый язык интерфейса.",
     "auto": "Авто (Системный)",
     "autoUnsupported": "Авто (Не поддерживается)",

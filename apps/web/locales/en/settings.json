@@ -348,6 +348,13 @@
     "exportDialogTitle": "Export Application Logs",
     "exportHeader": "Accomplish Application Logs\nExported: {{timestamp}}\nLog Directory: {{logDir}}\n\nNo logs recorded yet.\n"
   },
+  "appearance": {
+    "themeTitle": "Appearance",
+    "themeDescription": "Choose your preferred color theme.",
+    "themeSystem": "System",
+    "themeLight": "Light",
+    "themeDark": "Dark"
+  },
   "language": {
     "title": "Language",
     "description": "Choose your preferred display language.",

@@ -348,8 +348,14 @@
     "exportDialogTitle": "Exporter les journaux de l'application",
     "exportHeader": "Journaux de l'application Accomplish\nExporté : {{timestamp}}\nRépertoire des journaux : {{logDir}}\n\nAucun journal enregistré.\n"
   },
+  "appearance": {
+    "themeTitle": "Apparence",
+    "themeDescription": "Choisissez votre thème de couleur préféré.",
+    "themeSystem": "Système",
+    "themeLight": "Clair",
+    "themeDark": "Sombre"
+  },
   "language": {
-    "title": "Langue",
     "description": "Choisissez votre langue d'affichage préférée.",
     "auto": "Auto (Système)",
     "autoUnsupported": "Auto (Non pris en charge)",
