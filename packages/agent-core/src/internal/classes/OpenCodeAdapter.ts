@@ -604,10 +604,11 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
         if (message.part.reason === 'error') {
           if (!this.hasCompleted) {
             this.hasCompleted = true;
+            const userMessage = this.classifyProcessError(1);
             this.emit('complete', {
               status: 'error',
               sessionId: this.currentSessionId || undefined,
-              error: 'Task failed',
+              error: userMessage,
             });
           }
           break;
