@@ -2,6 +2,8 @@ import * as pty from 'node-pty';
 import { app, shell } from 'electron';
 import { getOpenCodeCliPath } from './electron-options';
 import { generateOpenCodeConfig } from './config-generator';
+import { isOpenCodeCliInstallError, INSTALL_ERROR_MESSAGE } from './cli-error-utils';
+import { getLogCollector } from '../logging';
 import {
   stripAnsi,
   quoteForShell,
@@ -109,6 +111,19 @@ export class OAuthBrowserFlow {
 
         if (exitCode === 0) {
           resolve({ openedUrl });
+          return;
+        }
+
+        // Detect known CLI installation error patterns and surface a friendly message
+        if (isOpenCodeCliInstallError(buffer)) {
+          getLogCollector().logEnv('WARN', '[Auth] CLI install error detected', {
+            // Redact URLs and potential tokens before logging
+            tail: buffer
+              .slice(-200)
+              .replace(/https?:\/\/\S+/gi, '[URL]')
+              .replace(/[A-Za-z0-9_-]{30,}/g, '[REDACTED]'),
+          });
+          reject(new Error(INSTALL_ERROR_MESSAGE));
           return;
         }
 

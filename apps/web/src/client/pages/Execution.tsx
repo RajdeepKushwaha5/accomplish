@@ -77,11 +77,33 @@ function ExecutionCompleteFooter({
   const statusLabel = rawStatus ? tExecution(statusLabelKey) : '';
   const canFavorite = FAVORITABLE_STATUSES.includes(rawStatus);
 
+  const failedErrorMessage =
+    currentTask?.status === 'failed' ? (currentTask.result?.error ?? null) : null;
+
+  // Only show the alert when the error contains actionable detail from the classifier.
+  // We check for the debug-panel fallback suffix rather than comparing to a localized
+  // string, making this locale-independent.
+  const showFailedAlert =
+    failedErrorMessage !== null &&
+    failedErrorMessage.length > 0 &&
+    !failedErrorMessage.includes('Check the debug panel for details');
+
   return (
     <div className="flex-shrink-0 border-t border-border bg-card/50 px-6 py-4 flex flex-col items-center gap-3">
       <p className="text-sm text-muted-foreground">
         {tExecution('taskStatus', { status: statusLabel })}
       </p>
+      {showFailedAlert && (
+        <Alert
+          variant="destructive"
+          className="py-2 px-3 flex items-center gap-2 [&>svg]:static [&>svg~*]:pl-0 max-w-md w-full"
+        >
+          <WarningCircle className="h-4 w-4 shrink-0" />
+          <AlertDescription className="text-xs leading-tight">
+            {failedErrorMessage}
+          </AlertDescription>
+        </Alert>
+      )}
       <div className="flex items-center gap-2">
         {canFavorite && (
           <StarButton
@@ -141,7 +163,7 @@ export function ExecutionPage() {
     addTaskUpdateBatch,
     updateTaskStatus,
     setPermissionRequest,
-    permissionRequest,
+    permissionRequests,
     respondToPermission,
     sendFollowUp,
     interruptTask,
@@ -154,6 +176,9 @@ export function ExecutionPage() {
     todos,
     todosTaskId,
   } = useTaskStore();
+
+  // Derive the permission request scoped to this task from the map
+  const permissionRequest = (id ? permissionRequests[id] : undefined) ?? null;
 
   const speechInput = useSpeechInput({
     onTranscriptionComplete: (text) => {
@@ -940,6 +965,16 @@ export function ExecutionPage() {
                   elapsedTime={elapsedTime}
                 />
 
+                {/* Inline permission / question card — scoped to this task */}
+                <AnimatePresence>
+                  {permissionRequest && (
+                    <PermissionDialog
+                      permissionRequest={permissionRequest}
+                      onRespond={handlePermissionResponse}
+                    />
+                  )}
+                </AnimatePresence>
+
                 <div ref={messagesEndRef} />
 
                 <AnimatePresence>
@@ -971,15 +1006,7 @@ export function ExecutionPage() {
           </div>
         )}
 
-        {/* Permission Request Modal */}
-        <AnimatePresence>
-          {permissionRequest && (
-            <PermissionDialog
-              permissionRequest={permissionRequest}
-              onRespond={handlePermissionResponse}
-            />
-          )}
-        </AnimatePresence>
+        {/* Permission requests are now rendered inline in the scroll area above */}
 
         {/* Running state input with Stop button */}
         {currentTask.status === 'running' && !permissionRequest && (

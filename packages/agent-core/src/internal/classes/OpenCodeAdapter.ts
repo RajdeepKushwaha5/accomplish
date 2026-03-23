@@ -6,6 +6,7 @@ import path from 'path';
 
 import { StreamParser } from './StreamParser.js';
 import { OpenCodeLogWatcher, createLogWatcher, OpenCodeLogError } from './OpenCodeLogWatcher.js';
+import { classifyProcessError } from '../utils/process-error-classifier.js';
 import {
   CompletionEnforcer,
   CompletionEnforcerCallbacks,
@@ -16,6 +17,7 @@ import type { OpenCodeMessage } from '../../common/types/opencode.js';
 import type { PermissionRequest } from '../../common/types/permission.js';
 import type { TodoItem } from '../../common/types/todo.js';
 import type { SandboxConfig, SandboxProvider } from '../../common/types/sandbox.js';
+import type { BrowserFramePayload } from '../../common/types/browser-view.js';
 import { DEFAULT_SANDBOX_CONFIG } from '../../common/types/sandbox.js';
 import { DisabledSandboxProvider } from '../../sandbox/disabled-provider.js';
 import { serializeError } from '../../utils/error.js';
@@ -23,6 +25,14 @@ import { getOAuthProviderDisplayName, isOAuthProviderId } from '../../common/typ
 import { CONNECTOR_AUTH_REQUIRED_MARKER } from '../../common/constants.js';
 
 const LOG_TRUNCATION_LIMIT = 500;
+
+/** Windows STATUS_CONTROL_C_EXIT — exit code produced when a process is
+ *  terminated via Ctrl+C (0xC000013A). On Windows this is not an error;
+ *  treat it the same as a clean exit (code === 0). */
+export const WINDOWS_CTRL_C_EXIT_CODE = -1073741510;
+
+export const isNormalExit = (code: number | null, platform?: string): boolean =>
+  code === 0 || (platform === 'win32' && code === WINDOWS_CTRL_C_EXIT_CODE);
 
 interface ConnectorAuthPauseInput {
   providerId?: string;
@@ -72,6 +82,9 @@ export interface OpenCodeAdapterEvents {
   debug: [{ type: string; message: string; data?: unknown }];
   'todo:update': [TodoItem[]];
   'auth-error': [{ providerId: string; message: string }];
+  /** Live browser preview frame — emitted when the dev-browser-mcp tool writes a JSON frame to stdout.
+   *  Contributed by samarthsinh2660 (PR #414) for ENG-695. */
+  'browser-frame': [BrowserFramePayload];
   reasoning: [string];
   'tool-call-complete': [
     {
@@ -112,6 +125,82 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
   private waitingTransitionTimer: ReturnType<typeof setTimeout> | null = null;
   private hasReceivedFirstTool: boolean = false;
   private startTaskCalled: boolean = false;
+  private outputBuffer: string = '';
+  /** Rolling buffer for reassembling split JSON lines from dev-browser-mcp stdout.
+   *  Contributed by samarthsinh2660 (PR #414) for ENG-695. */
+  private browserFrameBuffer: string = '';
+  private static readonly OUTPUT_BUFFER_MAX = 4096;
+
+  private appendToOutputBuffer(data: string): void {
+    if (data.length >= OpenCodeAdapter.OUTPUT_BUFFER_MAX) {
+      this.outputBuffer = data.slice(-OpenCodeAdapter.OUTPUT_BUFFER_MAX);
+    } else {
+      this.outputBuffer = (this.outputBuffer + data).slice(-OpenCodeAdapter.OUTPUT_BUFFER_MAX);
+    }
+  }
+
+  /**
+   * Scan stdout data for JSON-encoded browser frame messages written by dev-browser-mcp.
+   * Each frame line has the shape: `{"type":"browser-frame","taskId":...,"pageName":...,"frame":...,"timestamp":...}`.
+   *
+   * Lines may be split across PTY data chunks, so we maintain a rolling buffer to reassemble them.
+   * On match, emits the `'browser-frame'` event consumed by TaskManager → task-callbacks → renderer.
+   *
+   * Returns only the non-browser-frame lines so callers can safely feed the result into
+   * `appendToOutputBuffer` / `StreamParser` without polluting them with large base64 payloads.
+   *
+   * Contributed by samarthsinh2660 (PR #414) for ENG-695.
+   */
+  private checkForBrowserFrame(data: string): string {
+    try {
+      const combined = `${this.browserFrameBuffer}${data}`;
+      const lines = combined.split('\n');
+      // Keep the incomplete trailing chunk for the next call
+      this.browserFrameBuffer = lines.pop() ?? '';
+
+      const passthrough: string[] = [];
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          passthrough.push(line);
+          continue;
+        }
+
+        let isBrowserFrame = false;
+        try {
+          const parsed = JSON.parse(trimmed) as {
+            type?: string;
+            frame?: string;
+            pageName?: string;
+            timestamp?: number;
+          };
+          if (parsed.type === 'browser-frame' && parsed.frame && parsed.pageName) {
+            const framePayload: BrowserFramePayload = {
+              pageName: parsed.pageName,
+              frame: parsed.frame,
+              timestamp: parsed.timestamp ?? Date.now(),
+            };
+            this.emit('browser-frame', framePayload);
+            isBrowserFrame = true;
+          }
+        } catch {
+          // Not JSON or not a browser-frame — pass through as-is
+        }
+
+        if (!isBrowserFrame) {
+          passthrough.push(line);
+        }
+      }
+
+      // Re-join lines; trailing incomplete chunk stays in browserFrameBuffer
+      return passthrough.join('\n');
+    } catch {
+      // Ignore errors in frame detection to avoid breaking the main data path
+      return data;
+    }
+  }
+
   private options: AdapterOptions;
   private sandboxProvider: SandboxProvider;
   private sandboxConfig: SandboxConfig;
@@ -231,6 +320,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     this.lastWorkingDirectory = config.workingDirectory;
     this.hasReceivedFirstTool = false;
     this.startTaskCalled = false;
+    this.outputBuffer = '';
     if (this.waitingTransitionTimer) {
       clearTimeout(this.waitingTransitionTimer);
       this.waitingTransitionTimer = null;
@@ -319,14 +409,21 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
           .replace(/\x1B\][^\x07]*\x07/g, '')
           .replace(/\x1B\][^\x1B]*\x1B\\/g, '');
         /* eslint-enable no-control-regex */
-        if (cleanData.trim()) {
-          const truncated =
-            cleanData.substring(0, LOG_TRUNCATION_LIMIT) +
-            (cleanData.length > LOG_TRUNCATION_LIMIT ? '...' : '');
-          console.log('[OpenCode CLI stdout]:', truncated);
-          this.emit('debug', { type: 'stdout', message: cleanData });
+        // Check for embedded browser-frame JSON lines (even for split PTY chunks).
+        // Use the returned value — browser-frame lines are stripped so they don't
+        // pollute outputBuffer or StreamParser with large base64 payloads.
+        const passthroughData = this.checkForBrowserFrame(cleanData);
 
-          this.streamParser.feed(cleanData);
+        if (passthroughData.trim()) {
+          const truncated =
+            passthroughData.substring(0, LOG_TRUNCATION_LIMIT) +
+            (passthroughData.length > LOG_TRUNCATION_LIMIT ? '...' : '');
+          console.log('[OpenCode CLI stdout]:', truncated);
+          this.emit('debug', { type: 'stdout', message: passthroughData });
+
+          this.appendToOutputBuffer(passthroughData);
+
+          this.streamParser.feed(passthroughData);
         }
       });
 
@@ -415,6 +512,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
 
     console.log(`[OpenCode Adapter] Disposing adapter for task ${this.currentTaskId}`);
     this.isDisposed = true;
+    this.browserFrameBuffer = '';
 
     if (this.logWatcher) {
       this.logWatcher.stop().catch((err) => {
@@ -616,10 +714,11 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
         if (message.part.reason === 'error') {
           if (!this.hasCompleted) {
             this.hasCompleted = true;
+            const errorMessage = classifyProcessError(undefined, this.outputBuffer);
             this.emit('complete', {
               status: 'error',
               sessionId: this.currentSessionId || undefined,
-              error: 'Task failed',
+              error: errorMessage,
             });
           }
           break;
@@ -743,7 +842,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
   private handleProcessExit(code: number | null): void {
     this.ptyProcess = null;
 
-    if (this.wasInterrupted && code === 0 && !this.hasCompleted) {
+    if (this.wasInterrupted && isNormalExit(code, this.options.platform) && !this.hasCompleted) {
       console.log('[OpenCode CLI] Task was interrupted by user');
       this.hasCompleted = true;
       this.emit('complete', {
@@ -754,8 +853,10 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
       return;
     }
 
-    if (code === 0 && !this.hasCompleted) {
-      this.completionEnforcer.handleProcessExit(code).catch((error) => {
+    if (isNormalExit(code, this.options.platform) && !this.hasCompleted) {
+      // Normalize Windows Ctrl+C exit code to 0 so the completion enforcer treats it as a clean exit
+      const normalizedCode = code === WINDOWS_CTRL_C_EXIT_CODE ? 0 : (code ?? 0);
+      this.completionEnforcer.handleProcessExit(normalizedCode).catch((error) => {
         console.error('[OpenCode Adapter] Completion enforcer error:', error);
         this.hasCompleted = true;
         this.emit('complete', {
@@ -767,10 +868,10 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
       return;
     }
 
-    if (!this.hasCompleted) {
-      if (code !== null && code !== 0) {
-        this.emit('error', new Error(`OpenCode CLI exited with code ${code}`));
-      }
+    if (!this.hasCompleted && !isNormalExit(code, this.options.platform)) {
+      // Treat null (abnormal PTY termination) and non-zero non-normal codes as errors
+      const errorMessage = classifyProcessError(code ?? undefined, this.outputBuffer);
+      this.emit('error', new Error(errorMessage));
     }
 
     this.currentTaskId = null;
@@ -785,6 +886,7 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
     console.log(`[OpenCode Adapter] Starting session resumption with session ${sessionId}`);
 
     this.streamParser.reset();
+    this.outputBuffer = '';
 
     const config: TaskConfig = {
       prompt,
@@ -833,14 +935,18 @@ export class OpenCodeAdapter extends EventEmitter<OpenCodeAdapterEvents> {
         .replace(/\x1B\][^\x07]*\x07/g, '')
         .replace(/\x1B\][^\x1B]*\x1B\\/g, '');
       /* eslint-enable no-control-regex */
-      if (cleanData.trim()) {
+      // Route through checkForBrowserFrame so continuation PTY frames are not dropped
+      const passthroughData = this.checkForBrowserFrame(cleanData);
+      if (passthroughData.trim()) {
         const truncated =
-          cleanData.substring(0, LOG_TRUNCATION_LIMIT) +
-          (cleanData.length > LOG_TRUNCATION_LIMIT ? '...' : '');
+          passthroughData.substring(0, LOG_TRUNCATION_LIMIT) +
+          (passthroughData.length > LOG_TRUNCATION_LIMIT ? '...' : '');
         console.log('[OpenCode CLI stdout]:', truncated);
-        this.emit('debug', { type: 'stdout', message: cleanData });
+        this.emit('debug', { type: 'stdout', message: passthroughData });
 
-        this.streamParser.feed(cleanData);
+        this.appendToOutputBuffer(passthroughData);
+
+        this.streamParser.feed(passthroughData);
       }
     });
 

@@ -29,6 +29,9 @@ import type {
   WorkspaceCreateInput,
   WorkspaceUpdateInput,
   StoredFavorite,
+  BrowserFramePayload,
+  BrowserStatusPayload,
+  BrowserNavigatePayload,
 } from '@accomplish_ai/agent-core';
 import type { CloudBrowserConfig } from '@accomplish_ai/agent-core/common';
 
@@ -358,6 +361,21 @@ interface AccomplishAPI {
   onTodoUpdate?(callback: (data: { taskId: string; todos: TodoItem[] }) => void): () => void;
   onAuthError?(callback: (data: { providerId: string; message: string }) => void): () => void;
 
+  // Browser Preview (ENG-695)
+  // Contributed by dhruvawani17 (PR #489), samarthsinh2660 (PR #414), david-mamani (PR #553)
+  onBrowserFrame?(callback: (event: BrowserFramePayload & { taskId: string }) => void): () => void;
+  onBrowserNavigate?(
+    callback: (event: BrowserNavigatePayload & { taskId: string; pageName: string }) => void,
+  ): () => void;
+  onBrowserStatus?(
+    callback: (
+      event: BrowserStatusPayload & { taskId: string; pageName: string; message?: string },
+    ) => void,
+  ): () => void;
+  startBrowserPreview?(taskId: string, pageName?: string): Promise<{ success: boolean }>;
+  stopBrowserPreview?(taskId: string): Promise<{ stopped: boolean }>;
+  getBrowserPreviewStatus?(): Promise<{ active: boolean }>;
+
   // Speech-to-Text
   speechIsConfigured(): Promise<boolean>;
   speechGetConfig(): Promise<{ enabled: boolean; hasApiKey: boolean; apiKeyPrefix?: string }>;
@@ -432,6 +450,11 @@ interface AccomplishAPI {
   resyncSkills(): Promise<Skill[]>;
   openSkillInEditor(filePath: string): Promise<void>;
   showSkillInFolder(filePath: string): Promise<void>;
+
+  // Daemon / Background Mode
+  getRunInBackground(): Promise<boolean>;
+  setRunInBackground(enabled: boolean): Promise<void>;
+  getDaemonSocketPath(): Promise<string>;
 
   // Sandbox configuration
   getSandboxConfig(): Promise<{
