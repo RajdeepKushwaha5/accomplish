@@ -65,3 +65,4 @@ export function registerSkillsHandlers(): void {
     shell.showItemInFolder(filePath);
   });
 }
+// ensure CI
