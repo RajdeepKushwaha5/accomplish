@@ -33,6 +33,7 @@ import { migration as v023 } from './v023-scheduled-tasks.js';
 import { migration as v024 } from './v024-huggingface-local-config.js';
 import { migration as v025 } from './v024-accomplish-ai.js';
 import { migration as v026 } from './v026-language.js';
+import { migration as v027 } from './v027-reconcile-commercial-schema.js';
 
 const migrations: Migration[] = [
   v001,
@@ -61,13 +62,14 @@ const migrations: Migration[] = [
   v024,
   v025,
   v026,
+  v027,
 ];
 export function registerMigration(migration: Migration): void {
   migrations.push(migration);
   migrations.sort((a, b) => a.version - b.version);
 }
 
-export const CURRENT_VERSION = 26;
+export const CURRENT_VERSION = 27;
 export function getStoredVersion(db: Database): number {
   try {
     const tableExists = db
